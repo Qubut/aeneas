@@ -70,6 +70,13 @@ let reborrow_ashared_loans (span : Meta.span) (loop_id : LoopId.id option)
 
   let fresh_absl = ref [] in
 
+  (* The copies (fresh id, original value) of the symbolic values whose type
+     contains the static region. *)
+  let static_copies :
+      (SymbolicValueId.id * symbolic_value * AbsId.id) list ref =
+    ref []
+  in
+
   (* Auxiliary function to create a new abstraction for a shared value.
 
      Example:
@@ -104,6 +111,9 @@ let reborrow_ashared_loans (span : Meta.span) (loop_id : LoopId.id option)
     (* We need a fresh region for the new abstraction *)
     let nrid = ctx.fresh_region_id () in
 
+    (* The identifier of the new abstraction *)
+    let nabs_id = ctx.fresh_abs_id () in
+
     (* Prepare the shared value *)
     let nsv =
       let n0 = List.length !sid_subst in
@@ -120,60 +130,17 @@ let reborrow_ashared_loans (span : Meta.span) (loop_id : LoopId.id option)
       let duplicated =
         List.filteri (fun i _ -> i < List.length !sid_subst - n0) !sid_subst
       in
-      List.iter
-        (fun ((nid, (osv : symbolic_value)) : _ * symbolic_value) ->
-          if
-            ty_has_regions_in_set ctx.type_ctx.type_infos
-              (RegionSet.singleton RStatic)
-              osv.sv_ty
-          then
-            let proj_ty = osv.sv_ty in
-            let borrow : tavalue =
-              let proj =
-                AProjBorrows
-                  { proj = { sv_id = osv.sv_id; proj_ty }; loans = [] }
-              in
-              { value = ASymbolic (PNone, proj); ty = proj_ty }
-            in
-            let loan : tavalue =
-              let proj =
-                AProjLoans
-                  {
-                    proj = { sv_id = nid; proj_ty };
-                    consumed = [];
-                    borrows = [];
-                  }
-              in
-              { value = ASymbolic (PNone, proj); ty = proj_ty }
-            in
-            let kind : abs_kind =
-              match loop_id with
-              | Some loop_id -> Loop loop_id
-              | None -> WithCont
-            in
-            let cont : abs_cont option =
-              if with_abs_conts then
-                Some
-                  {
-                    output = Some (mk_etuple ~borrow_proj:true []);
-                    input = Some (mk_etuple ~borrow_proj:false []);
-                  }
-              else None
-            in
-            let static_abs =
-              {
-                abs_id = ctx.fresh_abs_id ();
-                kind;
-                can_end = true;
-                parents = AbsId.Set.empty;
-                ended_subabs = AbsLevelSet.empty;
-                regions = { owned = RegionSet.singleton RStatic };
-                avalues = [ borrow; loan ];
-                cont;
-              }
-            in
-            fresh_absl := static_abs :: !fresh_absl)
-        duplicated;
+      static_copies :=
+        List.filter_map
+          (fun ((nid, osv) : _ * symbolic_value) ->
+            if
+              ty_has_regions_in_set ctx.type_ctx.type_infos
+                (RegionSet.singleton RStatic)
+                osv.sv_ty
+            then Some (nid, osv, nabs_id)
+            else None)
+          duplicated
+        @ !static_copies;
       nsv
     in
 
@@ -229,7 +196,7 @@ let reborrow_ashared_loans (span : Meta.span) (loop_id : LoopId.id option)
     in
     let fresh_abs =
       {
-        abs_id = ctx.fresh_abs_id ();
+        abs_id = nabs_id;
         kind;
         can_end;
         parents = AbsId.Set.empty;
@@ -294,6 +261,91 @@ let reborrow_ashared_loans (span : Meta.span) (loop_id : LoopId.id option)
     end
   in
   let ctx = visitor#visit_eval_ctx () ctx in
+
+  (* The static region is not refreshed: the symbolic values we duplicated may
+     contain static borrows (possibly hidden in ADTs, see
+     {!TypesUtils.adt_has_hidden_static}), whose loans are provided only for
+     the original symbolic values. For each original value we introduce one
+     abstraction owning the static region, which borrows the static part of the
+     original value once and provides the loans of all its copies (the same
+     shape as when copying a symbolic value, see
+     {!InterpExpressions.copy_value}). *)
+  let static_absl =
+    let by_original =
+      List.fold_left
+        (fun acc ((nid, (osv : symbolic_value), aid) : _ * symbolic_value * _) ->
+          SymbolicValueId.Map.update osv.sv_id
+            (function
+              | None -> Some (osv, [ nid ], [ aid ])
+              | Some (osv, nids, aids) -> Some (osv, nid :: nids, aid :: aids))
+            acc)
+        SymbolicValueId.Map.empty !static_copies
+    in
+    List.map
+      (fun ((osv : symbolic_value), nids, parents) ->
+        let proj_ty = osv.sv_ty in
+        (* The value is shared: we reborrow it with a projector over a shared
+           borrow, and the loans of the copies are ignored shared loans (the
+           static region owns no shared loan identifier here), like the ones
+           the expansion of a shared reference produces for a region it does
+           not own. *)
+        let borrow : tavalue =
+          {
+            value =
+              ABorrow
+                (AProjSharedBorrow
+                   [ AsbProjReborrows { sv_id = osv.sv_id; proj_ty } ]);
+            ty = TRef (RStatic, proj_ty, RShared);
+          }
+        in
+        let loans =
+          List.map
+            (fun nid ->
+              let child : tavalue =
+                {
+                  value =
+                    ASymbolic
+                      ( PNone,
+                        AProjLoans
+                          {
+                            proj = { sv_id = nid; proj_ty };
+                            consumed = [];
+                            borrows = [];
+                          } );
+                  ty = proj_ty;
+                }
+              in
+              ({
+                 value = ALoan (AIgnoredSharedLoan child);
+                 ty = TRef (RStatic, proj_ty, RShared);
+               }
+                : tavalue))
+            nids
+        in
+        {
+          abs_id = ctx.fresh_abs_id ();
+          kind =
+            (match loop_id with
+            | Some loop_id -> Loop loop_id
+            | None -> Identity);
+          can_end = true;
+          (* The static part ends after the reborrows of the copies *)
+          parents = AbsId.Set.of_list parents;
+          ended_subabs = AbsLevelSet.empty;
+          regions = { owned = RegionSet.singleton RStatic };
+          avalues = borrow :: loans;
+          cont =
+            (if with_abs_conts then
+               Some
+                 {
+                   output = Some (mk_etuple ~borrow_proj:true []);
+                   input = Some (mk_etuple ~borrow_proj:false []);
+                 }
+             else None);
+        })
+      (SymbolicValueId.Map.values by_original)
+  in
+  fresh_absl := static_absl @ !fresh_absl;
 
   (* Add the abstractions *)
   let fresh_absl = List.map (fun abs -> EAbs abs) !fresh_absl in
