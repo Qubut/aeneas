@@ -77,6 +77,7 @@ package «tests» {}
 @[default_target] lean_lib IteratorsArray
 @[default_target] lean_lib IteratorsScalar
 @[default_target] lean_lib IterCollect
+@[default_target] lean_lib IterEnumerateFold
 @[default_target] lean_lib IterFindMap
 @[default_target] lean_lib IterFlatten
 @[default_target] lean_lib IterFold
@@ -106,6 +107,7 @@ package «tests» {}
 @[default_target] lean_lib NestedSharedBorrows
 @[default_target] lean_lib NoNestedBorrows
 @[default_target] lean_lib OpaqueMutRegion
+@[default_target] lean_lib OptionVecCharModels
 @[default_target] lean_lib Options
 @[default_target] lean_lib Order
 @[default_target] lean_lib OverflowingOps

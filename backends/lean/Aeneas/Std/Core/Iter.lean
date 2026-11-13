@@ -678,12 +678,28 @@ def core.iter.adapters.enumerate.IteratorEnumerate.next
       let count' ← self.count + 1#usize
       ok (some (self.count, a), { iter := iter', count := count' })
 
+/-- `Enumerate::fold`. The standard library folds the inner iterator with a counting closure; the
+    model is the default `fold` over `next`. -/
+@[rust_fun
+  "core::iter::adapters::enumerate::{core::iter::traits::iterator::Iterator<core::iter::adapters::enumerate::Enumerate<@I>, (usize, @Clause0_Item)>}::fold"]
+def core.iter.adapters.enumerate.Enumerate.Insts.CoreIterTraitsIteratorIteratorPairUsizeClause0_Item.fold
+    {I Item Acc F : Type _}
+    (IteratorInst : core.iter.traits.iterator.Iterator I Item)
+    (FnMutInst : core.ops.function.FnMut F (Acc × (Usize × Item)) Acc)
+    (self : core.iter.adapters.enumerate.Enumerate I) (init : Acc) (f : F) :
+    Result Acc :=
+  core.iter.traits.iterator.Iterator.fold.default.loop
+    (core.iter.adapters.enumerate.IteratorEnumerate.next IteratorInst) FnMutInst self init f
+
 @[reducible, rust_trait_impl
   "core::iter::traits::iterator::Iterator<core::iter::adapters::enumerate::Enumerate<@I>, (usize, @Clause0_Item)>"]
 impl_def core.iter.traits.iterator.IteratorEnumerate {I : Type _} {Item : Type _}
     (IteratorInst : core.iter.traits.iterator.Iterator I Item) :
     core.iter.traits.iterator.Iterator (core.iter.adapters.enumerate.Enumerate I) (Usize × Item) := {
   next := core.iter.adapters.enumerate.IteratorEnumerate.next IteratorInst
+  fold := fun {_ _} FnMutInst =>
+    core.iter.adapters.enumerate.Enumerate.Insts.CoreIterTraitsIteratorIteratorPairUsizeClause0_Item.fold
+      IteratorInst FnMutInst
   step_by := core.iter.traits.iterator.Iterator.step_by.trait_default
     (core.iter.traits.iterator.IteratorEnumerate IteratorInst)
   enumerate := core.iter.traits.iterator.Iterator.enumerate.trait_default

@@ -207,6 +207,22 @@ theorem Vec.insert_length_spec {α : Type u} (v: Vec α) (i: Usize) (x: α)
   simp only [Vec.length] at hi
   simpa [hi, List.insertIdx_length_self] using h
 
+/-- `Vec::remove` removes the element at position `i` and returns it, shifting the elements after
+it to the left. Rust panics if `index >= len`. -/
+@[expose, rust_fun "alloc::vec::{alloc::vec::Vec<@T>}::remove" (keepParams := [true, false])]
+def Vec.remove {α : Type u} (v: Vec α) (i: Usize) : Result (α × Vec α) :=
+  match v.val[i.val]? with
+  | none => fail arrayOutOfBounds
+  | some x =>
+    ok (x, .from (v.val.eraseIdx i.val) (by have := v.property; grind [List.length_eraseIdx]))
+
+@[step]
+theorem Vec.remove_spec {α : Type u} (v: Vec α) (i: Usize)
+  (hbound : i.val < v.length) :
+  v.remove i ⦃ x nv => x = v.val[i.val] ∧ nv.val = v.val.eraseIdx i.val ⦄ := by
+  have h : v.val[i.val]? = some v.val[i.val] := List.getElem?_eq_getElem hbound
+  simp [remove, h]
+
 @[expose] def Vec.index_usize {α : Type u} (v: Vec α) (i: Usize) : Result α :=
   match v[i.val]? with
   | none => fail .arrayOutOfBounds
